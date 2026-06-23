@@ -1,0 +1,31 @@
+name: Agentic-AI-QA-Copilot CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  build-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Import sanity check
+        run: python -c "from agents.graph import qa_graph; print('Sanity check passed!')"
+
+      - name: Build Docker image
+        run: docker build -t dahiyaujjwal/ai-qa-copilot:latest .
+
+      - name: Docker image sanity check
+        run: docker run --rm --entrypoint python dahiyaujjwal/ai-qa-copilot:latest -c "from agents.graph import qa_graph; print('Container sanity check passed!')"
