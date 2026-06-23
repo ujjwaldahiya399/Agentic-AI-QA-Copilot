@@ -1,0 +1,6 @@
+langgraph>=0.0.10
+litellm>=1.0.0
+requests>=2.31.0
+python-dotenv>=1.0.1
+pytest>=7.0.0
+PyGithub>=2.0.0
