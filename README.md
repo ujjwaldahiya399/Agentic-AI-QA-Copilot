@@ -4,6 +4,8 @@ An end-to-end, multi-agent AI system that autonomously reviews GitHub Pull Reque
 
 Built with **LangGraph** for deterministic agent orchestration, **Groq (LLaMA 3.3 70B)** for fast LLM inference, and **PyGithub** for GitHub integration.
 
+![Demo](./demo.gif)
+
 ---
 
 ## What It Does
@@ -138,6 +140,9 @@ python main.py https://github.com/<owner>/<repo>/pull/<number>
 ```bash
 docker build -t qa-pipeline .
 docker run --env-file .env qa-pipeline https://github.com/<owner>/<repo>/pull/<number>
+
+docker pull dahiyaujjwal/agentic-ai-qa-copilot:latest
+docker run --env-file .env dahiyaujjwal/agentic-ai-qa-copilot:latest https://github.com/<owner>/<repo>/pull/<number>
 ```
 
 ---
