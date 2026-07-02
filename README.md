@@ -4,6 +4,8 @@ An end-to-end, multi-agent AI system that autonomously reviews GitHub Pull Reque
 
 Built with **LangGraph** for deterministic agent orchestration, **Groq (LLaMA 3.3 70B)** for fast LLM inference, and **PyGithub** for GitHub integration.
 
+![Demo](./demo.gif)
+
 ---
 
 ## What It Does
