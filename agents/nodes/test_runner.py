@@ -1,24 +1,19 @@
-# So here's the full flow for test_runner_node:
-
-# Generate — send review_summary, risk_areas, and the actual file content (from changed_files) to the LLM, asking it to write pytest test code
-# Extract — strip the LLM's response down to just the raw Python code (it'll probably wrap it in markdown code fences)
-# Write to disk — write the actual source file (e.g., login.py) and the generated test file into a temporary directory so pytest can import and run them together
-# Execute — use subprocess to run pytest against that temp directory, with a timeout, and capture the output
-# Return — test_cases (the generated code) and test_results (the pytest output)
-
-
-from ast import pattern
 import re
-import subprocess
+from typing import Union
+
 import litellm
-import tempfile
-from pathlib import Path
-class TestRunnerNode:
-    
+
+from agents.state import ExecutionResult, QAState
+from tools.docker_runner import run_tests_in_docker
+
+
+class TestGeneratorNode:
+    """Generate pytest code from the review and changed files."""
+
     def __init__(self):
         self.model_id = "groq/llama-3.3-70b-versatile"
 
-    def __call__(self, state):
+    def __call__(self, state: QAState) -> dict[str, str]:
         # 1. Generate test code using the review summary, risk areas, and changed files
         review_summary = state.get("review_summary", "")
         risk_areas = state.get("risk_areas", "")
@@ -55,7 +50,7 @@ Return ONLY the raw Python code. Do not include any explanation, commentary, or 
             max_tokens=1500,
             temperature=0.2
         )
-        generated_test_code = response.choices[0].message.content
+        generated_test_code = response.choices[0].message.content or ""
        
 
 
@@ -67,44 +62,15 @@ Return ONLY the raw Python code. Do not include any explanation, commentary, or 
         else:
             generated_test_code = generated_test_code.strip()        
 
-        # write the actual source file (e.g., login.py) and the generated test file into a temporary directory so
-        #  pytest can import and run them together
+        return {"test_cases": generated_test_code}
 
-        # use subprocess to run pytest against that temp directory, with a timeout, and capture the output
-        # With pathlib, you'd do something like creating the parent directory before writing the file — using Path(...).parent.mkdir(parents=True, exist_ok=True).
 
-        
-        temporary_directory = tempfile.mkdtemp(prefix="qa_agent_tests_")
-        # Now let's build the rest. You need three more things:
-        # Write each file from changed_files into that temp directory — loop through the dict, write each filename with its content
-        # Write the generated test code into its own file in the same directory (e.g., test_generated.py)
-        # Run pytest via subprocess against that directory, with a timeout, and capture stdout/stderr
+class TestRunnerNode:
+    """Run the validated test in Docker and save its execution evidence."""
 
-        for filename, content in changed_files.items():
-            target_path = Path(temporary_directory) / filename
-            target_path.parent.mkdir(parents=True, exist_ok=True)  # Ensure parent directories exist
-            with open(target_path, "w") as f:
-                f.write(content)
-
-        # Write the generated test code into its own file in the same directory (e.g., test_generated.py)
-        with open(f"{temporary_directory}/test_generated.py", "w") as f:
-
-            f.write(generated_test_code)
-
-        # Run pytest via subprocess against that directory, with a timeout, and capture stdout/stderr
-        try:
-            result = subprocess.run(
-                ["pytest", temporary_directory, "--disable-warnings"],
-                capture_output=True,
-                text=True,
-                timeout=30  # seconds
-            )
-            test_results = result.stdout + "\n" + result.stderr
-        except subprocess.TimeoutExpired:
-            test_results = "Test execution timed out after 30 seconds."
-
-        # Return test_cases (the generated code) and test_results (the pytest output)
+    def __call__(self, state: QAState) -> dict[str, Union[ExecutionResult, str]]:
+        result = run_tests_in_docker(state["changed_files"], state["test_cases"])
         return {
-            "test_cases": generated_test_code,
-            "test_results": test_results
+            "execution_result": result,
+            "test_results": result["stdout"] + "\n" + result["stderr"],
         }

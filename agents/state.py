@@ -1,27 +1,47 @@
 
-from typing import TypedDict
+from typing import Literal, Optional, TypedDict
 
-class QAState(TypedDict):
-    """
-    A class represting the state of a QA pipeline agent. It contains the following fields:
 
-    """
+class ValidationResult(TypedDict):
+    valid: bool
+    message: str
+
+
+class ExecutionResult(TypedDict):
+    exit_code: Optional[int]
+    stdout: str
+    stderr: str
+    duration_ms: int
+    timed_out: bool
+
+
+OutcomeCode = Literal["INVALID_GEN", "PYTEST_OK", "TEST_FAILURE", "NO_TESTS", "TIMEOUT", "EXECUTION_ERROR"]
+
+
+class ExecutionClassification(TypedDict):
+    code: OutcomeCode
+    reason: str
+
+
+class QAInput(TypedDict):
+    """Pull request data available when the workflow starts."""
+
     pr_url: str
+    pr_sha: str
     pr_title: str
     pr_desc: str
     raw_diff: str
-    changed_files: dict[str, str]  # filename to content mapping
+    changed_files: dict[str, str]
 
-    # code review agent output
+
+class QAState(QAInput, total=False):
+    """Shared state with outputs added by nodes as they run."""
+
     review_summary: str
     risk_areas: str
-
-    # Test Runner Agent output
     test_cases: str
+    validation_result: ValidationResult
+    execution_result: ExecutionResult
+    classification: ExecutionClassification
     test_results: str
-
-    # Report Agent output
     final_report: str
-
-
-
