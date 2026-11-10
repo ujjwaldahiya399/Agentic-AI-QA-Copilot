@@ -17,7 +17,7 @@ def run_tests_in_docker(changed_files: dict[str, str], test_code: str) -> Execut
     command = [
         docker, "run", "--rm", "-i", "--pull=never", "--name", container,
         "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
-        "--memory=256m", "--cpus=1", "--pids-limit=64",
+        "--memory=256m", "--memory-swap=256m", "--cpus=1", "--pids-limit=64",
         "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,mode=1777,size=64m",
         "qa-copilot-runner",
     ]
