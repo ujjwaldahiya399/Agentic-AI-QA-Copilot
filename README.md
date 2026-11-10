@@ -1,200 +1,152 @@
-# 🤖 Agentic AI QA Copilot
+# Agentic AI QA Copilot
 
-An end-to-end, multi-agent AI system that autonomously reviews GitHub Pull Requests, generates and executes real tests against the actual code, and posts a complete QA report back to the PR — **without any human involvement** beyond providing the PR URL.
+A LangGraph workflow that reviews a GitHub pull request, generates Python tests, validates the generated code, runs valid tests in a restricted Docker container, and reports the observed pytest result. The CLI can post the report to the PR when configured with a GitHub token. A failing test is evidence to investigate, not automatic proof of a product bug.
 
-Built with **LangGraph** for deterministic agent orchestration, **Groq (LLaMA 3.3 70B)** for fast LLM inference, and **PyGithub** for GitHub integration.
+The review and test generation use Groq's LLaMA 3.3 70B model through LiteLLM. Validation, execution, classification, and report formatting follow explicit Python rules.
 
-![Demo](./demo.gif)
+![Earlier demo](./demo.gif)
 
----
+## Why this exists
 
-## What It Does
+Code review text is useful, but a test run gives the reviewer concrete execution evidence: the proposed assertion, pytest output, exit code, and the code version under review. The evidence still needs interpretation. A generated test can assert the wrong behavior, pass trivially, or fail because its setup is incomplete.
 
-Give it a GitHub PR URL, and it will:
+An earlier demo PR produced findings around `login(None)`, email-address handling, and an SQL-injection-shaped input. Those observations are useful examples to inspect in the demo; whether each is a product defect depends on the intended requirements. The Week 4 evaluation below uses separate, controlled fixtures.
 
-1. **Fetch** the PR's title, description, diff, and full content of every changed file
-2. **Review** the code with an AI agent that identifies concrete risk areas — edge cases, missing validation, security gaps
-3. **Generate and execute** real `pytest` test cases targeting those exact risk areas, in an isolated sandbox
-4. **Compile** a clean, structured QA report with a clear verdict
-5. **Post** that report as a comment directly on the original PR
+## Workflow
 
-All of this happens automatically, in a single command.
+1. Fetch PR metadata, a diff, and supported changed text files; record the PR head commit SHA. The intake checks whether the PR head or base changed during the fetch.
+2. Ask the model to review the change and identify risk areas, then generate proposed pytest code.
+3. Validate that the proposed code is nonempty and has valid Python syntax. On validation failure, request at most two repairs and revalidate each revision. If it remains invalid, report `INVALID_GEN` without running pytest.
+4. Run syntax-valid tests in the `qa-copilot-runner` Docker image and capture the exit code, output, duration, and timeout flag.
+5. Classify the result and render a Markdown report containing the PR head SHA, verdict, diagnostic, and available pytest log. The CLI's comment-posting path is separate from the local graph evaluation described below.
 
----
-
-## Why This Exists
-
-Most "AI code review" tools generate *opinions*. This pipeline generates *evidence*. The test_runner agent doesn't just ask an LLM "is this code correct?" — it writes real test code, runs it in an isolated environment with `pytest`, and reports the actual pass/fail results. If a test fails, it's because the code genuinely has a bug, not because a language model said so.
-
-**Proof:** in real test runs against this repo's demo PR, the pipeline independently surfaced multiple confirmed defects, including:
-- `login()` raising an unhandled `TypeError` when passed `None` instead of failing gracefully
-- An email-validation regex that simultaneously rejected valid addresses (with `+`, quoted parts) and accepted clearly invalid ones
-- No input sanitization — a SQL-injection-shaped string was silently accepted
-
----
-
-## Architecture
-
-```
-PR URL
-  │
-  ▼
-┌─────────────────────────────────────────────────────────┐
-│  GitHub API (PyGithub + requests)                       │
-│  → PR metadata, diff, full content of changed files      │
-└───────────────────────────┬───────────────────────────────┘
-                            ▼
-                  ┌──────────────────┐
-   START ───────► │  code_review     │  Identifies risk areas
-                  │  agent (LLM)     │  from diff + file content
-                  └────────┬─────────┘
-                           ▼
-                  ┌──────────────────┐
-                  │  test_runner     │  Generates pytest tests,
-                  │  agent (LLM +    │  runs them in an isolated
-                  │  pytest exec)    │  temp directory
-                  └────────┬─────────┘
-                           ▼
-                  ┌──────────────────┐
-                  │  report          │  Deterministic Markdown
-                  │  agent (no LLM)  │  report from real results
-                  └────────┬─────────┘
-                           ▼
-                         END ──────► Posted as a PR comment
+```mermaid
+flowchart TD
+    A["PR URL and head SHA"] --> B["Review and generate"]
+    B --> C["Validate Python syntax"]
+    C -->|"Invalid; fewer than 2 repairs"| D["Repair tests"]
+    D --> C
+    C -->|Valid| E["Docker pytest"]
+    C -->|"Still invalid"| F["Classify and report"]
+    E --> F
 ```
 
-The pipeline is built as a **LangGraph `StateGraph`** — the *order* of execution (review → test → report) is hardcoded in Python and cannot be skipped or reordered by the LLM. Each agent reads from and writes to a shared, typed state object, only ever modifying its own fields.
+The graph uses a bounded conditional route. It does not rewrite an assertion merely because pytest reports a failure.
 
----
+### Outcome labels
 
-## Tech Stack
-
-| Layer | Tool |
+| Code | Meaning |
 |---|---|
-| Agent orchestration | [LangGraph](https://github.com/langchain-ai/langgraph) |
-| LLM inference | Groq (LLaMA 3.3 70B) via [LiteLLM](https://github.com/BerriAI/litellm) |
-| GitHub integration | [PyGithub](https://github.com/PyGithub/PyGithub) + `requests` |
-| Test execution | `pytest`, sandboxed via `tempfile` + `subprocess` |
-| Containerization | Docker |
-| CI | GitHub Actions |
+| `PYTEST_OK` | Pytest exited 0. This alone does not establish useful coverage; skipped tests can also produce exit 0. |
+| `TEST_FAILURE` | Pytest reported a failure. Inspect the assertion and the intended behavior before calling it a product defect. |
+| `INVALID_GEN` | Generated code failed validation after the available repairs; pytest was skipped. |
+| `NO_TESTS` | Pytest collected no tests. |
+| `TIMEOUT` | The Docker test run exceeded its time limit. |
+| `EXECUTION_ERROR` | Collection, runner setup, or another execution problem prevented a reliable test result. |
 
----
+## Week 4 evidence — local fixtures
 
-## Project Structure
+| Check | Observed result | What it establishes |
+|---|---|---|
+| Baseline | 3/3 expected outcomes matched | Passing assertion, failing assertion, and invalid Python took their expected routes. |
+| Repair-routing tests with real Docker | 4/4 passed | A syntax error can recover on the first or second repair, repairs stop after two attempts, and a valid failed assertion stays intact. |
+| Fixed-response evaluation | 20/20 matched | The expected labels and routes matched on 20 repeatable cases, including three injection-themed fixtures. |
+| Langfuse | Three local traces visible | Recovery, exhausted repair, and controlled local Git-change routes were captured. |
+| Controlled local Git fixture | `TEST_FAILURE` | A change from `return 4` to `return 3` failed a generated assertion expecting 4. The trace recorded the classification and about 0.22 seconds total duration. |
 
-```
-.
-├── agents/
-│   ├── state.py              # Shared QAState schema
-│   ├── graph.py               # LangGraph StateGraph wiring
-│   └── nodes/
-│       ├── code_review.py     # Agent 1: risk analysis
-│       ├── test_runner.py     # Agent 2: generate + execute tests
-│       └── report.py          # Agent 3: deterministic report builder
-├── tools/
-│   └── github_utils.py        # PR fetching, file content, comment posting
-├── config/
-│   └── settings.py             # API keys & model config
-├── main.py                     # CLI entry point
-├── Dockerfile
-├── .dockerignore
-├── requirements.txt
-└── .github/workflows/ci.yml    # CI: import + Docker build sanity checks
-```
+The evaluation substituted **fixed model responses**. Its 20/20 score measures those fixtures and the tested workflow, not live-model test quality, broad prompt-injection resistance, or the probability of finding bugs in arbitrary PRs. The controlled PR example used a temporary **local Git repository** and a placeholder PR URL; it did not fetch a real GitHub PR or post a comment.
 
----
+Coverage and model token/cost metrics were **not measured** in this Week 4 run. They are not included in the outcome score.
 
-## Getting Started
+### Example report excerpt
 
-### Prerequisites
-- Python 3.11+
-- A [Groq API key](https://console.groq.com)
-- A GitHub [personal access token](https://github.com/settings/tokens) with `repo` scope
+The controlled local change made `value()` return 3 when the test expected 4. The report preserved the failing assertion instead of rewriting it:
 
-### Local Setup
-
-```bash
-git clone <this-repo>
-cd Agentic-AI-QA-Copilot
-
-python3 -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
-
-pip install -r requirements.txt
-```
-
-Create a `.env` file in the project root:
-```
-GROQ_API_KEY=your_groq_key_here
-GITHUB_TOKEN=your_github_token_here
-```
-
-### Run It
-
-```bash
-python main.py https://github.com/<owner>/<repo>/pull/<number>
-```
-
-### Run It With Docker
-
-```bash
-docker build -t qa-pipeline .
-docker run --env-file .env qa-pipeline https://github.com/<owner>/<repo>/pull/<number>
-
-docker pull dahiyaujjwal/agentic-ai-qa-copilot:latest
-docker run --env-file .env dahiyaujjwal/agentic-ai-qa-copilot:latest https://github.com/<owner>/<repo>/pull/<number>
-```
-
----
-
-## Example Output
-
-```markdown
-# QA Pipeline Report — feat: add email validation to login
+```text
+# QA Pipeline Report — controlled_local_pr
+Reviewed PR head commit `<local fixture SHA>`.
 
 ## Verdict
-### ❌ Failed
+### ❌ Test failure reported
+Pytest reported a test failure. Review the test and its output.
 
-**Tests Passed:** 4  |  **Tests Failed:** 3
-
----
-
-## Risk Areas Identified by Code Review
-1. Email Validation Pattern: regex may reject valid formats...
-2. Input Sanitization: no protection against SQL-injection-shaped input...
-...
-
-## Test Summary
-This pipeline auto-generated 7 test case(s) targeting the risk areas above.
-- ✅ Passed: 4
-- ❌ Failed: 3
-
-## Full Test Log
-[real pytest output, including tracebacks for each failure]
+Runner exit code `1`.
+FAILED test_generated.py::test_value - assert 3 == 4
 ```
 
-This report is posted directly as a comment on the originating PR.
+### Reproduce the local checks
 
----
+From the tested project checkout, with Python 3.11+ and Docker Desktop running:
 
-## Design Decisions & Known Limitations
+```bash
+.venv/bin/python -m pip install -r requirements.txt
+"$HOME/.docker/bin/docker" build -f Dockerfile.runner -t qa-copilot-runner .
+QA_TEST_REAL_DOCKER=1 .venv/bin/python -m pytest -v tests/test_repair_routing.py
+.venv/bin/python evals/run_week4_evaluation.py --output week4_evaluation.json
+```
 
-This project favors pragmatic, well-documented trade-offs over premature complexity:
+The 20-case evaluation includes a deliberate 30-second timeout case. The results JSON is a local generated artifact. Commit `evals/run_week4_evaluation.py` before presenting the evaluation as reproducible from a fresh checkout. The separate closeout script `run_week4_closeout.py` produced the three local Langfuse traces and saved `week4_closeout/controlled_local_pr_report.md` and `week4_closeout/trace_evidence.json`; add that script to `evals/` and document its invocation before presenting the trace run as reproducible from a fresh checkout.
 
-- **Test sandboxing:** generated test code runs via `subprocess` inside a `tempfile.mkdtemp()`-isolated directory with a timeout, rather than a full Docker-per-test-run sandbox. This was a deliberate v1 trade-off given timeline constraints; full per-run containerized isolation is a planned hardening step.
-- **`report_agent` is deterministic, not an LLM call.** Formatting structured data into Markdown doesn't need generative reasoning — using plain Python here is faster, free, and fully predictable.
-- **CI does not run the live pipeline.** GitHub Actions verifies the code imports correctly and the Docker image builds — it does not call live LLM/GitHub APIs on every push, to avoid spamming real PRs and burning API credits on commits unrelated to pipeline logic.
-- **Edge cases not yet handled:** deleted files in a PR, and binary (non-text) file content, during the changed-files fetch step.
+## Getting started and running the CLI
 
-## Roadmap
+Use Python 3.11+ and Docker Desktop. From the QA Copilot project root on the tested branch:
 
-- [ ] Conditional graph edges (e.g., skip test generation if review finds zero risk areas)
-- [ ] Full Docker-per-test-run sandboxing for generated code execution
-- [ ] Security scanning (Bandit / OWASP ZAP) integrated into the review agent
-- [ ] Support for multi-file, cross-file risk analysis at scale
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+"$HOME/.docker/bin/docker" build -f Dockerfile.runner -t qa-copilot-runner .
+```
 
----
+On systems where `docker` is already on `PATH`, use `docker` instead of `$HOME/.docker/bin/docker`. Place credentials in a local `.env` file:
 
-## License
+```text
+GROQ_API_KEY=your_key
+GITHUB_TOKEN=your_token
+```
 
-MIT
+Run the CLI with a PR URL:
+
+```bash
+.venv/bin/python main.py https://github.com/OWNER/REPO/pull/NUMBER
+```
+
+The current CLI attempts to **post a PR comment** after the graph completes. Use a PR you control and a token with only the permissions required for that PR. This end-to-end GitHub intake and posting path was **not verified by the Week 4 local fixtures**.
+
+The application `Dockerfile` builds the outer CLI image. The Week 4 runner uses a second Docker image launched by the host Docker daemon; the older `docker run --env-file .env qa-pipeline ...` instructions do not set up that nested runner path and are not a verified v2 command.
+
+## Components
+
+| Path | Responsibility |
+|---|---|
+| `agents/graph.py` | LangGraph nodes, conditional route, and two-repair bound |
+| `agents/state.py` | Typed workflow state and outcome definitions |
+| `agents/validation.py` | Generated-code syntax validation |
+| `agents/nodes/` | Review, generation/repair, execution, classification, and report nodes |
+| `tools/github_utils.py` | GitHub PR intake and comment-posting functions |
+| `tools/docker_runner.py` | Restricted container invocation and execution evidence |
+| `tools/container_pytest.py`, `Dockerfile.runner` | In-container pytest entry point and non-root runner image |
+| `tests/test_repair_routing.py` | Bounded-repair regression tests |
+| `evals/run_week4_evaluation.py` | Twenty fixed-response evaluation cases |
+
+## Execution controls and limits
+
+The local runner is configured to run as a non-root user with networking disabled, a read-only root filesystem, dropped capabilities, no-new-privileges, memory/CPU/process limits, a bounded temporary workspace, and a 30-second host timeout. The evaluation exercised specific outcomes and one no-outbound-network fixture; it was **not a complete sandbox security assessment**.
+
+The current syntax validator checks nonempty Python that compiles. It does not prove assertions are correct, symbols exist, imports are safe, or test coverage is meaningful. The runner receives the supplied changed files, so cross-file dependencies and non-text PR files need additional handling. The PR comment path, live model quality, coverage, and cost need separate verification.
+
+## Technology
+
+| Layer | Tools |
+|---|---|
+| Orchestration and generation | Python, LangGraph, LiteLLM, Groq (LLaMA 3.3 70B) |
+| GitHub intake and reporting | PyGithub, `requests` |
+| Test execution | pytest and a dedicated Docker runner image |
+| Local tracing exercise | Langfuse; not required for the ordinary CLI run |
+| Existing CI | GitHub Actions import and application-image build checks; the live pipeline and 20-case evaluation are not part of those checks |
+
+## Next checks
+
+- Verify the intake and comment-posting path with a PR you control, separately from the local fixtures.
+- Measure test coverage and model usage/cost before adding those metrics to a results table.
+- Evaluate fresh LLM responses on labeled PRs to measure test relevance and bug-finding ability.
+- Extend changed-file handling for cross-file dependencies, deleted files, and non-text content.
