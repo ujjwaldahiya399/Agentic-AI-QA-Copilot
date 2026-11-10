@@ -1,14 +1,22 @@
 
-import re
-import requests
 import base64
+import re
+from urllib.parse import quote
+
+import requests
 from github import Github
 
-def get_PR_data_from_url(pr_url: str, github_token: str) -> dict:
-    """
-   Parses a standard GitHub PR URL, fetches its metadata and raw diff from 
-    the GitHub API, and returns a structured dictionary with pr_url, pr_title, pr_desc, and raw_diff for the LangGraph state.
-    """
+from agents.state import QAInput
+
+
+def _get_pr_data(api_url: str, headers: dict[str, str]) -> dict:
+    response = requests.get(api_url, headers=headers, timeout=30)
+    response.raise_for_status()
+    return response.json()
+
+
+def get_PR_data_from_url(pr_url: str, github_token: str) -> QAInput:
+    """Fetch the pull request data used to start the QA workflow."""
     # Extract owner, repo, and pull number using regex
     match = re.match(r"https://github\.com/([^/]+)/([^/]+)/pull/(\d+)", pr_url)
     if not match:
@@ -24,52 +32,53 @@ def get_PR_data_from_url(pr_url: str, github_token: str) -> dict:
         "Accept": "application/vnd.github.v3+json"
     }
 
-    response = requests.get(api_url, headers=headers)
-    
-    if response.status_code != 200:
-        raise Exception(f"Failed to fetch PR data: {response.status_code} - {response.text}")
-
-    pr_data = response.json()
+    pr_data = _get_pr_data(api_url, headers)
+    head_sha = pr_data["head"]["sha"]
     changed_files = get_changed_files_content(owner, repo, pull_number, headers, pr_data)
+    diff_response = requests.get(pr_data["diff_url"], headers=headers, timeout=30)
+    diff_response.raise_for_status()
+
+    # The PR diff and file listing follow the PR as its revisions change.
+    latest = _get_pr_data(api_url, headers)
+    if latest["head"]["sha"] != head_sha or latest["base"]["sha"] != pr_data["base"]["sha"]:
+        raise RuntimeError("The pull request changed during fetch. Retry the review.")
+
     return {
         "pr_url": pr_url,
+        "pr_sha": head_sha,
         "pr_title": pr_data.get("title", ""),
-        "pr_desc": pr_data.get("body", ""),
-        "raw_diff": requests.get(pr_data.get("diff_url"), headers=headers).text,
-        "changed_files": changed_files
+        "pr_desc": pr_data.get("body") or "",
+        "raw_diff": diff_response.text,
+        "changed_files": changed_files,
     }
 
 
+def get_changed_files_content(owner, repo, pull_number, headers, pr_data):
+    """Fetch changed files from the PR head repository at its exact commit."""
+    head = pr_data["head"]
+    head_repo = head["repo"]
+    if head_repo is None:
+        raise ValueError("The pull request's head repository is no longer available.")
 
-def get_changed_files_content(owner,repo,pull_number,headers, pr_data):
-    """
-    Hits /pulls/{pull_number}/files to get the list of changed filenames
-    Gets the branch name from pr_data["head"]["ref"] (you already have pr_data in your existing function)
-    For each filename, hits the Contents API to get its content
-    Returns a dict of {filename: content}
-    """
     files_api_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pull_number}/files"
-    files_response = requests.get(files_api_url, headers=headers)
-    
-    if files_response.status_code != 200:
-        raise Exception(f"Failed to fetch changed files: {files_response.status_code} - {files_response.text}")
+    files_response = requests.get(files_api_url, headers=headers, timeout=30)
+    files_response.raise_for_status()
 
-    changed_files = files_response.json()
-    branch_name = pr_data["head"]["ref"]
-
+    contents_base = f"https://api.github.com/repos/{head_repo['full_name']}/contents"
     file_contents = {}
-    for file in changed_files:
+    for file in files_response.json():
+        if file["status"] == "removed":
+            continue
         filename = file["filename"]
-        content_api_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{filename}?ref={branch_name}"
-        content_response = requests.get(content_api_url, headers=headers)
-        
-        if content_response.status_code == 200:
-            content_data = content_response.json()
-            decoded_content = base64.b64decode(content_data["content"]).decode("utf-8")
-            file_contents[filename] = decoded_content
-
-        else:
-            file_contents[filename] = "Failed to fetch content"
+        content_response = requests.get(
+            f"{contents_base}/{quote(filename)}",
+            headers=headers,
+            params={"ref": head["sha"]},
+            timeout=30,
+        )
+        content_response.raise_for_status()
+        content_data = content_response.json()
+        file_contents[filename] = base64.b64decode(content_data["content"]).decode("utf-8")
 
     return file_contents
 

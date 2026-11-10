@@ -1,37 +1,44 @@
-# this is where you wire everything together with LangGraph. Think about what you learned in the course:
+from langgraph.graph import END, START, StateGraph
 
-# Create a StateGraph with your QAState
-# Add your nodes
-# Add edges connecting them: START → code_review → test_runner → report → END
-# Compile the graph
-
-# You only have the code_review node built so far, but you can stub the other two. Write graph.py — give it a shot.
-
-from langgraph.graph import StateGraph, START, END
-from .state import QAState
+from .nodes.classify import classify_execution
 from .nodes.code_review import PRReviewerNode
-from .nodes.test_runner import TestRunnerNode
 from .nodes.report import ReportAgent
-# 1. INITIALIZE BUILDER WITH STATE SCHEME
+from .nodes.test_runner import TestGeneratorNode, TestRunnerNode
+from .state import QAState
+from .validation import validate_generated_tests
+
+
+MAX_REPAIR_ATTEMPTS = 2
+
+
+def route_after_validation(state: QAState) -> str:
+    if state["validation_result"]["valid"]:
+        return "test_runner"
+    if state.get("repair_attempts", 0) < MAX_REPAIR_ATTEMPTS:
+        return "repair_tests"
+    return "classify"
+
+
 builder = StateGraph(QAState)
+builder.add_node("code_review", PRReviewerNode())
+builder.add_node("generate_tests", TestGeneratorNode())
+builder.add_node("validate_tests", validate_generated_tests)
+builder.add_node("repair_tests", TestGeneratorNode(repair=True))
+builder.add_node("test_runner", TestRunnerNode())
+builder.add_node("classify", classify_execution)
+builder.add_node("report", ReportAgent())
 
-# 2. DEFINE AND REGISTER NODES
-code_review_node = PRReviewerNode()
-
-# 3. define and register test runner node
-test_runner_node = TestRunnerNode()
-report_node = ReportAgent()
-
-# Register them into the builder
-builder.add_node("code_review", code_review_node)
-builder.add_node("test_runner", test_runner_node)
-builder.add_node("report", report_node)
-
-# 3. DEFINE WORKFLOW PATHWAYS (EDGES)
 builder.add_edge(START, "code_review")
-builder.add_edge("code_review", "test_runner")
-builder.add_edge("test_runner", "report")
+builder.add_edge("code_review", "generate_tests")
+builder.add_edge("generate_tests", "validate_tests")
+builder.add_conditional_edges(
+    "validate_tests",
+    route_after_validation,
+    {"test_runner": "test_runner", "repair_tests": "repair_tests", "classify": "classify"},
+)
+builder.add_edge("repair_tests", "validate_tests")
+builder.add_edge("test_runner", "classify")
+builder.add_edge("classify", "report")
 builder.add_edge("report", END)
 
-# 4. COMPILE INTO A RUNNABLE GRAPH
 qa_graph = builder.compile()

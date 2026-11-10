@@ -1,0 +1,7 @@
+FROM python:3.11-slim
+
+RUN python -m pip install --no-cache-dir pytest
+COPY tools/container_pytest.py /runner/container_pytest.py
+
+USER 65534:65534
+ENTRYPOINT ["python", "/runner/container_pytest.py"]
