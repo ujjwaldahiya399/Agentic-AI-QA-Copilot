@@ -10,6 +10,9 @@ from .validation import validate_generated_tests
 
 MAX_REPAIR_ATTEMPTS = 2
 
+def route_after_review(state: QAState) -> str:
+    return "classify" if state.get("review_error") else "generate_tests"
+
 
 def route_after_validation(state: QAState) -> str:
     if state["validation_result"]["valid"]:
@@ -29,7 +32,11 @@ builder.add_node("classify", classify_execution)
 builder.add_node("report", ReportAgent())
 
 builder.add_edge(START, "code_review")
-builder.add_edge("code_review", "generate_tests")
+builder.add_conditional_edges(
+    "code_review",
+    route_after_review,
+    {"generate_tests": "generate_tests", "classify": "classify"},
+)
 builder.add_edge("generate_tests", "validate_tests")
 builder.add_conditional_edges(
     "validate_tests",

@@ -13,6 +13,14 @@ _RUNNER_OUTCOMES: dict[Optional[int], tuple[OutcomeCode, str]] = {
 
 def classify_execution(state: QAState) -> dict[str, ExecutionClassification]:
     validation = state.get("validation_result")
+    if review_error := state.get("review_error"):
+        return {
+            "classification": {
+                "code": "INVALID_REVIEW",
+                "reason": review_error,
+            }
+        }
+
     if validation is not None and not validation["valid"]:
         return {"classification": {"code": "INVALID_GEN", "reason": validation["message"]}}
 
