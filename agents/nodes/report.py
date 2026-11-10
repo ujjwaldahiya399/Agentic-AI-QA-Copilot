@@ -30,6 +30,9 @@ class ReportAgent:
             f"## Verdict\n### {_VERDICTS[code]}",
             classification["reason"],
         ]
+        repair_attempts = state.get("repair_attempts", 0)
+        if repair_attempts:
+            sections.append(f"Repair attempts used: {repair_attempts}.")
         if code == "INVALID_GEN":
             sections.append("Pytest execution was skipped.")
         elif execution is not None:

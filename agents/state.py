@@ -40,6 +40,7 @@ class QAState(QAInput, total=False):
     review_summary: str
     risk_areas: str
     test_cases: str
+    repair_attempts: int
     validation_result: ValidationResult
     execution_result: ExecutionResult
     classification: ExecutionClassification

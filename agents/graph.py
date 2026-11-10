@@ -8,14 +8,22 @@ from .state import QAState
 from .validation import validate_generated_tests
 
 
+MAX_REPAIR_ATTEMPTS = 2
+
+
 def route_after_validation(state: QAState) -> str:
-    return "test_runner" if state["validation_result"]["valid"] else "classify"
+    if state["validation_result"]["valid"]:
+        return "test_runner"
+    if state.get("repair_attempts", 0) < MAX_REPAIR_ATTEMPTS:
+        return "repair_tests"
+    return "classify"
 
 
 builder = StateGraph(QAState)
 builder.add_node("code_review", PRReviewerNode())
 builder.add_node("generate_tests", TestGeneratorNode())
 builder.add_node("validate_tests", validate_generated_tests)
+builder.add_node("repair_tests", TestGeneratorNode(repair=True))
 builder.add_node("test_runner", TestRunnerNode())
 builder.add_node("classify", classify_execution)
 builder.add_node("report", ReportAgent())
@@ -26,8 +34,9 @@ builder.add_edge("generate_tests", "validate_tests")
 builder.add_conditional_edges(
     "validate_tests",
     route_after_validation,
-    {"test_runner": "test_runner", "classify": "classify"},
+    {"test_runner": "test_runner", "repair_tests": "repair_tests", "classify": "classify"},
 )
+builder.add_edge("repair_tests", "validate_tests")
 builder.add_edge("test_runner", "classify")
 builder.add_edge("classify", "report")
 builder.add_edge("report", END)
