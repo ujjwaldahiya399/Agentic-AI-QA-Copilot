@@ -43,6 +43,7 @@ The graph uses a bounded conditional route. It does not rewrite an assertion mer
 | `NO_TESTS` | Pytest collected no tests. |
 | `TIMEOUT` | The Docker test run exceeded its time limit. |
 | `EXECUTION_ERROR` | Collection, runner setup, or another execution problem prevented a reliable test result. |
+| `INVALID_REVIEW` | The code review response lacked required sections or contained an empty field; test generation and pytest were skipped. |
 
 ## Week 4 evidence — local fixtures
 

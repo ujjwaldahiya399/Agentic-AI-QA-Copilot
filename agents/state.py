@@ -36,7 +36,9 @@ class QAInput(TypedDict):
 
 class QAState(QAInput, total=False):
     """Shared state with outputs added by nodes as they run."""
-
+    review_error: str
+    review_summary: str
+    risk_areas: str
     review_summary: str
     risk_areas: str
     test_cases: str
